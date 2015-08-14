@@ -14,7 +14,7 @@ func (m KeyValueMap) Remove(k KeyType) {
 	delete(m, k)
 }
 
-// NodeInfoStore is a best-effort key value store
+// ClusterInfoStore is a best-effort key value store
 // that stores information associated with nodes.
 // For each node, it provides the associated information
 // in the form of a key-value store.

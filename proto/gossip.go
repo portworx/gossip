@@ -134,16 +134,21 @@ func logAndGetError(msg string) error {
 
 // New returns an initialized Gossip node
 // which identifies itself with the given ip
-func New(ip string) *Gossip {
+func NewGossip(ip string) *Gossip {
 	return new(Gossip).init(ip)
 }
 
 func (g *Gossip) init(ip string) *Gossip {
 	g.name = ip
 	g.nodes = make([]string, 10) // random initial capacity
-	g.store = make(map[string]NodeInfo)
+	g.store = make(NodeStore)
 	g.done = make(chan bool, 1)
 	rand.Seed(time.Now().UnixNano())
+	err := g.AddNode(ip)
+	if err != nil {
+		log.Error("Failed to add init node to store")
+		return nil
+	}
 	return g
 }
 
@@ -173,6 +178,7 @@ func (g *Gossip) RemoveNode(ip string) error {
 		if node == ip {
 			// not sure if this is the most efficient way
 			g.nodes = append(g.nodes[:i], g.nodes[i+1:]...)
+			return nil
 		}
 	}
 	return logAndGetError("Node being added already exists:" + ip)
