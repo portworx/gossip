@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -102,6 +103,13 @@ func (store NodeStore) update(subset NodeStore) {
 		// g.store[node].LastUpdateTs < nodeData.LastUpdateTs
 		store[node] = nodeData
 	}
+}
+
+func connectionString(ip string) string {
+	if strings.Index(ip, ":") == -1 {
+		return ip + ":" + CONN_PORT
+	}
+	return ip
 }
 
 // Implements the UnreliableBroadcast interface
@@ -415,7 +423,7 @@ func (g *Gossip) gossip() {
 		return
 	}
 
-	conn, err := net.Dial(CONN_TYPE, peerNode+":"+CONN_PORT)
+	conn, err := net.Dial(CONN_TYPE, connectionString(peerNode))
 	if err != nil {
 		log.Error("Peer " + peerNode + " unavailable to gossip")
 		//XXX: FIXME : note that the peer is down
