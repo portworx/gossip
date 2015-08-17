@@ -1,6 +1,7 @@
 package proto
 
 import (
+	"fmt"
 	log "github.com/Sirupsen/logrus"
 	"reflect"
 	"sync"
@@ -98,6 +99,10 @@ type NodeIdInfoList struct {
 	NodeIds []NodeId
 }
 
+func (s NodeInfo) String() string {
+	return fmt.Sprintf("\nId: %v\nLastUpdateTs: %v\nValue: %v", s.Id, s.LastUpdateTs, s.Value)
+}
+
 func (s NodeValue) MetaInfo() StoreValueMetaInfo {
 	var metaInfo NodeMetaInfoList
 	metaInfo.MetaInfos = make([]NodeMetaInfo, len(s.Nodes)) // check for nil
@@ -173,10 +178,7 @@ func (s NodeValue) Update(newStore StoreValue) {
 func (s NodeValue) Diff(
 	svMetaInfo StoreValueMetaInfo) (StoreValueDiff, StoreValueDiff) {
 
-	maxLen := len(s.Nodes)
 	var diffNew, selfNew StoreValueDiff
-	newIds := make([]NodeId, maxLen)
-	oldIds := make([]NodeId, maxLen)
 
 	var metaInfo NodeMetaInfoList
 	metaInfo, ok := svMetaInfo.(NodeMetaInfoList)
@@ -185,27 +187,65 @@ func (s NodeValue) Diff(
 		return diffNew, selfNew
 	}
 
-	for i, nodeIdInfo := range metaInfo.MetaInfos {
-		if i >= maxLen {
-			newIds = append(newIds, nodeIdInfo.Id)
-			oldIds = append(oldIds, 0)
-			continue
-		}
+	selfLen := len(s.Nodes)
+	metaLen := len(metaInfo.MetaInfos)
+	maxLen := selfLen
+	if metaLen > selfLen {
+		maxLen = metaLen
+	}
+	newIds := make([]NodeId, maxLen)
+	oldIds := make([]NodeId, maxLen)
 
-		if nodeIdInfo.Id != 0 &&
-			nodeIdInfo.LastUpdateTs.After(s.Nodes[i].LastUpdateTs) {
-			newIds = append(newIds, nodeIdInfo.Id)
-			oldIds = append(oldIds, 0)
-			continue
-		} else {
-			oldIds = append(oldIds, nodeIdInfo.Id)
-			newIds = append(newIds, 0)
-			continue
+	// There must be a diff only if there exist atleast one valid
+	// id in the node list
+	newIdsValid, oldIdsValid := false, false
+	for i := 0; i < maxLen; i++ {
+		if i < selfLen && i < metaLen {
+			if metaInfo.MetaInfos[i].Id != 0 &&
+				metaInfo.MetaInfos[i].LastUpdateTs.After(s.Nodes[i].LastUpdateTs) {
+				newIdsValid = true
+				newIds[i] = metaInfo.MetaInfos[i].Id
+				oldIds[i] = 0
+				continue
+			} else if metaInfo.MetaInfos[i].LastUpdateTs.Before(s.Nodes[i].LastUpdateTs) {
+				if metaInfo.MetaInfos[i].Id > 0 {
+					oldIdsValid = true
+				}
+				oldIds[i] = metaInfo.MetaInfos[i].Id
+				newIds[i] = 0
+				continue
+			}
+		} else if i < selfLen {
+			// we have more nodes than meta info
+			oldIds[i] = s.Nodes[i].Id
+			newIds[i] = 0
+			if oldIds[i] > 0 {
+				oldIdsValid = true
+			}
+		} else if i < metaLen {
+			// meta info has more nodes than us
+			newIds[i] = metaInfo.MetaInfos[i].Id
+			oldIds[i] = 0
+			if newIds[i] > 0 {
+				newIdsValid = true
+			}
 		}
 	}
 
-	diffNew.Ids = newIds
-	selfNew.Ids = oldIds
+	// return a list only if it contains atleast one valid value,
+	// else return an emtpy list
+	if newIdsValid {
+		diffNew.Ids = newIds
+	} else {
+		diffNew.Ids = make([]NodeId, 0)
+	}
+
+	if oldIdsValid {
+		selfNew.Ids = oldIds
+	} else {
+		selfNew.Ids = make([]NodeId, 0)
+	}
+
 	return diffNew, selfNew
 }
 
