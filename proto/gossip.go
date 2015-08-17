@@ -24,87 +24,6 @@ const (
 	GOSSIP_INTERVAL = 2 * time.Minute
 )
 
-type NodeInfo struct {
-	// the last update timestamp
-	LastUpdateTs time.Time
-	// Information about this node stored as a key-value store
-	Data KeyValueMap
-}
-
-type NodeMetaInfo struct {
-	// name of the Node
-	Name string
-	// the last update timestamp
-	LastUpdateTs time.Time
-}
-
-type NodeStore map[string]NodeInfo
-
-// getNewAndOldNodesList returns a tuple of lists, where the first
-// list contains the names of nodes for which it has more updated
-// information, and the second list contains the names of nodes
-// for which it has older information with respect to peerData
-func (s NodeStore) getNewAndOldNodesList(
-	peerData []NodeMetaInfo) (
-	peerNewerNodes, selfNewerNodes []string) {
-
-	// hoping that the nodes are on evenly split
-	peerNewerNodes = make([]string, len(peerData)/2)
-	selfNewerNodes = make([]string, len(peerData)/2)
-
-	for _, info := range peerData {
-		nodeData, ok := s[info.Name]
-
-		switch {
-		case !ok, nodeData.LastUpdateTs.Before(info.LastUpdateTs):
-			peerNewerNodes = append(peerNewerNodes, info.Name)
-		case nodeData.LastUpdateTs.After(info.LastUpdateTs):
-			selfNewerNodes = append(selfNewerNodes, info.Name)
-		default:
-			// both have the same data, do nothing
-		}
-	}
-
-	return
-}
-
-// nodeMetaInfoList returns a list of meta info
-// for all the nodes for which information is present
-// in the store
-func (s NodeStore) nodeMetaInfoList() []NodeMetaInfo {
-	list := make([]NodeMetaInfo, len(s))
-
-	for name, data := range s {
-		list = append(list, NodeMetaInfo{name, data.LastUpdateTs})
-	}
-
-	return list
-}
-
-// subset returns a list of the subset nodes
-func (store NodeStore) subset(nodes []string) NodeStore {
-	subset := make(NodeStore)
-
-	for _, node := range nodes {
-		nodeData, ok := store[node]
-		if !ok {
-			log.Warn("Info for node ", node, " missing from store")
-			continue
-		}
-		subset[node] = nodeData
-	}
-
-	return subset
-}
-
-func (store NodeStore) update(subset NodeStore) {
-	for node, nodeData := range subset {
-		// FIXME/gsangle : Add an assert such that
-		// g.store[node].LastUpdateTs < nodeData.LastUpdateTs
-		store[node] = nodeData
-	}
-}
-
 func connectionString(ip string) string {
 	if strings.Index(ip, ":") == -1 {
 		return ip + ":" + CONN_PORT
@@ -117,13 +36,13 @@ type Gossip struct {
 	// node list, maintained separately
 	nodes     []string
 	name      string
+	id        NodeId
 	nodesLock sync.Mutex
 	// to signal exit gossip loop
 	done chan bool
 
 	// the actual in-memory state
-	store     NodeStore
-	storeLock sync.Mutex
+	store GossipStore
 }
 
 // Utility methods
@@ -135,13 +54,14 @@ func logAndGetError(msg string) error {
 // New returns an initialized Gossip node
 // which identifies itself with the given ip
 func NewGossip(ip string) *Gossip {
-	return new(Gossip).init(ip)
+	gs := NewGossipStore()
+	return new(Gossip).init(ip, gs)
 }
 
-func (g *Gossip) init(ip string) *Gossip {
+func (g *Gossip) init(ip string, gs GossipStore) *Gossip {
 	g.name = ip
 	g.nodes = make([]string, 10) // random initial capacity
-	g.store = make(NodeStore)
+	g.store = gs
 	g.done = make(chan bool, 1)
 	rand.Seed(time.Now().UnixNano())
 	err := g.AddNode(ip)
@@ -191,41 +111,6 @@ func (g *Gossip) GetNodes() []string {
 	nodeList := make([]string, len(g.nodes))
 	copy(nodeList, g.nodes)
 	return nodeList
-}
-
-func (g *Gossip) Update(key KeyType, value ValueType) {
-	g.storeLock.Lock()
-	nodeInfo := g.store[g.name]
-	// FIXME assert ok
-	nodeInfo.LastUpdateTs = time.Now()
-	nodeInfo.Data.Update(key, value)
-	g.storeLock.Unlock()
-}
-
-func (g *Gossip) Remove(key KeyType) {
-	g.storeLock.Lock()
-	nodeInfo := g.store[g.name]
-	// FIXME assert ok
-	nodeInfo.LastUpdateTs = time.Now()
-	nodeInfo.Data.Remove(key)
-	g.storeLock.Unlock()
-}
-
-func (g *Gossip) GetValuesForNode(ip string) KeyValueMap {
-	g.storeLock.Lock()
-	defer g.storeLock.Unlock()
-
-	nodeInfo, ok := g.store[g.name]
-	retKeyValueMap := make(KeyValueMap)
-
-	if ok {
-		// create a copy of the map
-		for k, v := range nodeInfo.Data {
-			retKeyValueMap[k] = v
-		}
-	}
-
-	return retKeyValueMap
 }
 
 // sendData serializes the given object and sends
@@ -284,16 +169,14 @@ func rcvData(msg interface{}, conn net.Conn) error {
 // for which the peer has more latest information available
 func (g *Gossip) getUpdatesFromPeer(conn net.Conn) error {
 
-	newPeerData := make(map[string]NodeInfo)
+	var newPeerData StoreValueMap
 	err := rcvData(&newPeerData, conn)
 	if err != nil {
 		log.Error("Error fetching the latest peer data", err)
 		return err
 	}
 
-	g.storeLock.Lock()
-	g.store.update(newPeerData)
-	g.storeLock.Unlock()
+	g.store.Update(newPeerData)
 
 	return nil
 }
@@ -301,27 +184,20 @@ func (g *Gossip) getUpdatesFromPeer(conn net.Conn) error {
 // sendNodeMetaInfo sends a list of meta info for all
 // the nodes in the nodes's store to the peer
 func (g *Gossip) sendNodeMetaInfo(conn net.Conn) error {
-	g.storeLock.Lock()
-	msg := g.store.nodeMetaInfoList()
-	g.storeLock.Unlock()
-
+	msg := g.store.MetaInfo()
 	err := sendData(msg, conn)
 	return err
 }
 
 // sendUpdatesToPeer sends the information about the given
 // nodes to the peer
-func (g *Gossip) sendUpdatesToPeer(nodes []string, conn net.Conn) error {
-
-	g.storeLock.Lock()
-	dataToSend := g.store.subset(nodes)
-	g.storeLock.Unlock()
-
+func (g *Gossip) sendUpdatesToPeer(diff *StoreValueIdInfoMap, conn net.Conn) error {
+	dataToSend := g.store.Subset(*diff)
 	return sendData(dataToSend, conn)
 }
 
 func (g *Gossip) handleGossip(conn net.Conn) {
-	peerMetaInfoList := make([]NodeMetaInfo, 1, 10)
+	var peerMetaInfoList StoreValueMetaInfoMap
 	err := error(nil)
 
 	// 1. Get the info about the node data that the sender has
@@ -334,14 +210,11 @@ func (g *Gossip) handleGossip(conn net.Conn) {
 	// 2. Compare with current data that this node has and get
 	//    the names of the nodes for which this node has stale info
 	//    as compared to the sender
-	g.storeLock.Lock()
-	peerNewerNodes, selfNewerNodes :=
-		g.store.getNewAndOldNodesList(peerMetaInfoList)
-	g.storeLock.Unlock()
+	diffNew, selfNew := g.store.Diff(peerMetaInfoList)
 
 	// 3. Send this list to the peer, and get the latest data
 	// for them
-	err = sendData(peerNewerNodes, conn)
+	err = sendData(diffNew, conn)
 	if err != nil {
 		log.Error("Error sending list of nodes to fetch: ", err)
 		return
@@ -356,14 +229,10 @@ func (g *Gossip) handleGossip(conn net.Conn) {
 
 	// 4. Since you know which data is stale on the sender side,
 	//    send him the data for the updated nodes
-	err = g.sendUpdatesToPeer(selfNewerNodes, conn)
+	err = g.sendUpdatesToPeer(&selfNew, conn)
 	if err != nil {
 		return
 	}
-
-	// 5. Exchange info about cluster aliveness with last
-	//    contact time and contact status
-	// FIXME/gsangle: implement it
 }
 
 func (g *Gossip) receive_loop() {
@@ -445,8 +314,8 @@ func (g *Gossip) gossip() {
 	}
 
 	// get a list of requested nodes from the peer and
-	var nodes []string
-	err = rcvData(nodes, conn)
+	var diff StoreValueIdInfoMap
+	err = rcvData(&diff, conn)
 	if err != nil {
 		log.Error("Failed to get request info to the peer: ", err)
 		//XXX: FIXME : note that the peer is down
@@ -454,7 +323,7 @@ func (g *Gossip) gossip() {
 	}
 
 	// send back the data
-	err = g.sendUpdatesToPeer(nodes, conn)
+	err = g.sendUpdatesToPeer(&diff, conn)
 	if err != nil {
 		log.Error("Failed to send newer data to the peer: ", err)
 		//XXX: FIXME : note that the peer is down
