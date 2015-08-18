@@ -12,6 +12,10 @@ const (
 	Memory string = "Memory"
 )
 
+func printTest(name string) {
+	fmt.Println("************* ", name, " *************")
+}
+
 func fillUpNode(node *NodeInfo, i int) {
 	node.Id = NodeId(i + 1)
 	node.LastUpdateTs = time.Now()
@@ -25,7 +29,6 @@ func fillUpNode(node *NodeInfo, i int) {
 func fillUpNodeInfo(nodes *NodeValue) {
 	for i := 0; i < len(nodes.Nodes); i++ {
 		fillUpNode(&nodes.Nodes[i], i)
-		//fmt.Println(nodes.Nodes[i])
 	}
 }
 
@@ -62,6 +65,7 @@ func verifyMetaInfo(nodes *NodeValue,
 }
 
 func TestNodeValueMetaInfo(t *testing.T) {
+	printTest("TestNodeValueMetaInfo")
 	var nodes NodeValue
 	nodes.Nodes = make([]NodeInfo, 3)
 
@@ -96,6 +100,7 @@ func TestNodeValueMetaInfo(t *testing.T) {
 }
 
 func TestNodeValueDiff(t *testing.T) {
+	printTest("TestNodeValueDiff")
 	var node_1, node_2 NodeValue
 
 	// Case: node_1 and node_2 both have nil nodes
@@ -260,6 +265,111 @@ func TestNodeValueDiff(t *testing.T) {
 
 	if n2Ids[4] != 0 || n1Ids[4] != 0 {
 		t.Error("Common element wrongly passed n2: ", n2Ids[4], " n1: ", n1Ids[4])
+	}
+
+}
+
+func verifyNodeInfoEquality(c *NodeValue, u *NodeValue, t *testing.T) {
+	for i := 0; i < len(u.Nodes); i++ {
+		if c.Nodes[i].Id != u.Nodes[i].Id ||
+			c.Nodes[i].LastUpdateTs != u.Nodes[i].LastUpdateTs {
+			t.Error("NodeInfo Mismatch: c: ", c, " u: ", u)
+		}
+	}
+}
+
+func TestNodeValueUpdate(t *testing.T) {
+	printTest("TestNodeValueUpdate")
+	curr := &NodeValue{}
+	update := &NodeValue{}
+
+	// Case: Both current node and update are nil
+	curr.Update(update)
+	if curr.Nodes != nil {
+		t.Error("After nil updating nil, nodes are non-nil: ", curr.Nodes)
+	}
+
+	// Case: Current node is nil and there is an update
+	update.Nodes = make([]NodeInfo, 3)
+	fillUpNodeInfo(update)
+	curr.Update(update)
+	if len(curr.Nodes) != len(update.Nodes) {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" update: ", len(update.Nodes))
+	}
+	verifyNodeInfoEquality(curr, update, t)
+
+	// Case: Current node is non-emtpy and update is nil
+	newNilUpdate := &NodeValue{}
+	curr.Update(newNilUpdate)
+	if len(curr.Nodes) != len(update.Nodes) {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" update: ", len(update.Nodes))
+	}
+	verifyNodeInfoEquality(curr, update, t)
+
+	// Case: Current node and update are non-nil, update being
+	// shorter than current nodes len
+	update.Nodes = make([]NodeInfo, 2)
+	fillUpNodeInfo(update)
+	sameNodeInfo := curr.Nodes[2]
+	origLen := len(curr.Nodes)
+	curr.Update(update)
+	if len(curr.Nodes) != origLen {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" original len: ", origLen)
+	}
+	verifyNodeInfoEquality(curr, update, t)
+	if curr.Nodes[2].Id != sameNodeInfo.Id ||
+		curr.Nodes[2].LastUpdateTs != sameNodeInfo.LastUpdateTs {
+		t.Error("Same NodeInfo Mismatch: c: ", curr, " u: ", sameNodeInfo)
+	}
+
+	// Case: Current node and update are non-nil, update being
+	// longer than current nodes len
+	update.Nodes = make([]NodeInfo, 5)
+	fillUpNodeInfo(curr)
+	fillUpNodeInfo(update)
+	curr.Update(update)
+	if len(curr.Nodes) != len(update.Nodes) {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" update len: ", len(update.Nodes))
+	}
+	verifyNodeInfoEquality(curr, update, t)
+
+	// Case: Current node and update are non-nil, update being
+	// older than current node contents
+	update.Nodes = make([]NodeInfo, 5)
+	curr.Nodes = make([]NodeInfo, 5)
+	copyOfCurr := &NodeValue{}
+	copyOfCurr.Nodes = make([]NodeInfo, 5)
+	fillUpNodeInfo(update)
+	fillUpNodeInfo(curr)
+	copy(copyOfCurr.Nodes, curr.Nodes)
+	curr.Update(update)
+	if len(curr.Nodes) != len(update.Nodes) {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" update len: ", len(update.Nodes))
+	}
+	verifyNodeInfoEquality(curr, copyOfCurr, t)
+
+	// Case: Current node and update are non-nil, update has only
+	// one new element
+	fillUpNodeInfo(curr)
+	copy(update.Nodes, curr.Nodes)
+	lastNode := len(update.Nodes) - 1
+	update.Nodes[lastNode].LastUpdateTs = time.Now()
+	curr.Update(update)
+	copy(copyOfCurr.Nodes, curr.Nodes)
+	copyOfCurr.Nodes = copyOfCurr.Nodes[:len(update.Nodes)]
+	if len(curr.Nodes) != len(copyOfCurr.Nodes) {
+		t.Error("Len mismatch after update, curr: ", len(curr.Nodes),
+			" update len: ", len(update.Nodes))
+	}
+	verifyNodeInfoEquality(curr, copyOfCurr, t)
+	if curr.Nodes[lastNode].Id != update.Nodes[lastNode].Id ||
+		curr.Nodes[lastNode].LastUpdateTs != update.Nodes[lastNode].LastUpdateTs {
+		t.Error("Same NodeInfo Mismatch: c: ", curr, " u: ", update.Nodes[lastNode])
 	}
 
 }

@@ -103,7 +103,7 @@ func (s NodeInfo) String() string {
 	return fmt.Sprintf("\nId: %v\nLastUpdateTs: %v\nValue: %v", s.Id, s.LastUpdateTs, s.Value)
 }
 
-func (s NodeValue) MetaInfo() StoreValueMetaInfo {
+func (s *NodeValue) MetaInfo() StoreValueMetaInfo {
 	var metaInfo NodeMetaInfoList
 	metaInfo.MetaInfos = make([]NodeMetaInfo, len(s.Nodes)) // check for nil
 	for i, data := range s.Nodes {
@@ -112,7 +112,7 @@ func (s NodeValue) MetaInfo() StoreValueMetaInfo {
 	return metaInfo
 }
 
-func (s NodeValue) IdInfo() StoreValueIdInfo {
+func (s *NodeValue) IdInfo() StoreValueIdInfo {
 	var idInfo NodeIdInfoList
 	idInfo.NodeIds = make([]NodeId, len(s.Nodes))
 	for _, data := range s.Nodes {
@@ -121,7 +121,7 @@ func (s NodeValue) IdInfo() StoreValueIdInfo {
 	return idInfo
 }
 
-func (s NodeValue) UpdateSelfValue(val interface{}) {
+func (s *NodeValue) UpdateSelfValue(val interface{}) {
 	var nodeInfo NodeInfo
 	nodeInfo, ok := val.(NodeInfo)
 	if !ok {
@@ -141,9 +141,9 @@ func (s NodeValue) UpdateSelfValue(val interface{}) {
 	s.Nodes[nodeInfo.Id] = nodeInfo
 }
 
-func (s NodeValue) Update(newStore StoreValue) {
-	var newValues NodeValue
-	newValues, ok := newStore.(NodeValue)
+func (s *NodeValue) Update(newStore StoreValue) {
+	var newValues *NodeValue
+	newValues, ok := newStore.(*NodeValue)
 	if !ok {
 		log.Error("Invalid type for Update()", reflect.TypeOf(newStore))
 		return
@@ -154,28 +154,32 @@ func (s NodeValue) Update(newStore StoreValue) {
 		return
 	}
 
-	oldLen := len(s.Nodes)
-	for i, newData := range newValues.Nodes {
-		switch {
-		case newData.Id == 0:
-			continue
-		case i >= oldLen,
-			s.Nodes[i].Id == 0:
-			log.Info("Appended nil new value at position ", i)
-			s.Nodes = append(s.Nodes, newData)
-		case s.Nodes[i].LastUpdateTs.Before(newData.LastUpdateTs):
-			log.Info("Appended new value at position ", i)
-			s.Nodes[i] = newData
-		case s.Nodes[i].LastUpdateTs.After(newData.LastUpdateTs):
+	selfLen := len(s.Nodes)
+	newLen := len(newValues.Nodes)
+
+	// update existing elements
+	for i := 0; i < selfLen; i++ {
+		if i >= newLen {
+			// all updates are applied now
+			return
+		}
+
+		if s.Nodes[i].LastUpdateTs.Before(newValues.Nodes[i].LastUpdateTs) {
+			log.Info("Updating new value at position ", i)
+			s.Nodes[i] = newValues.Nodes[i]
+		} else {
+			// just for debug purposes
 			log.Info("Skipping value at position ", i,
-				" since we have newer data")
-		default:
-			continue
+				" currTs: ", s.Nodes[i].LastUpdateTs,
+				" newTs: ", newValues.Nodes[i].LastUpdateTs)
 		}
 	}
+
+	// copy over remaining elements
+	s.Nodes = append(s.Nodes, newValues.Nodes[selfLen:]...)
 }
 
-func (s NodeValue) Diff(
+func (s *NodeValue) Diff(
 	svMetaInfo StoreValueMetaInfo) (StoreValueDiff, StoreValueDiff) {
 
 	var diffNew, selfNew StoreValueDiff
@@ -249,9 +253,9 @@ func (s NodeValue) Diff(
 	return diffNew, selfNew
 }
 
-func (s NodeValue) DiffValue(
+func (s *NodeValue) DiffValue(
 	svDiff StoreValueDiff) StoreValue {
-	var sValue NodeValue
+	sValue := &NodeValue{}
 	if svDiff.Ids == nil {
 		return sValue
 	}
@@ -277,7 +281,7 @@ func (s NodeValue) DiffValue(
 
 type NodeValueMap struct {
 	lock  sync.Mutex
-	kvMap map[StoreKey]NodeValue
+	kvMap map[StoreKey]*NodeValue
 }
 
 type NodeValueMetaMap map[StoreKey]NodeMetaInfo
@@ -289,12 +293,12 @@ type NewOldList struct {
 	OlderList StoreValueIdInfo
 }
 
-func (s NodeValueMap) Update(newStore StoreValueMap) {
+func (s *NodeValueMap) Update(newStore StoreValueMap) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
 	for key, newValue := range newStore {
-		newNodeValue, ok := newValue.(NodeValue)
+		newNodeValue, ok := newValue.(*NodeValue)
 		if !ok {
 			log.Error("Invalid type for StoreValue.Update()", reflect.TypeOf(newNodeValue))
 			return
@@ -309,16 +313,16 @@ func (s NodeValueMap) Update(newStore StoreValueMap) {
 }
 
 func NewGossipStore() GossipStore {
-	var n NodeValueMap
-	n.kvMap = make(map[StoreKey]NodeValue)
+	n := &NodeValueMap{}
+	n.kvMap = make(map[StoreKey]*NodeValue)
 	return n
 }
 
-func (s NodeValueMap) UpdateStoreValue(key StoreKey, val interface{}) {
+func (s *NodeValueMap) UpdateStoreValue(key StoreKey, val interface{}) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
-	var nodeValue NodeValue
+	var nodeValue *NodeValue
 	nodeValue, ok := s.kvMap[key]
 	if !ok {
 		nodeValue.UpdateSelfValue(val)
@@ -327,7 +331,7 @@ func (s NodeValueMap) UpdateStoreValue(key StoreKey, val interface{}) {
 	nodeValue.UpdateSelfValue(val)
 }
 
-func (s NodeValueMap) GetStoreValue(key StoreKey) StoreValue {
+func (s *NodeValueMap) GetStoreValue(key StoreKey) StoreValue {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -336,7 +340,7 @@ func (s NodeValueMap) GetStoreValue(key StoreKey) StoreValue {
 	return storeValue
 }
 
-func (s NodeValueMap) GetStoreKeys() []StoreKey {
+func (s *NodeValueMap) GetStoreKeys() []StoreKey {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -349,7 +353,7 @@ func (s NodeValueMap) GetStoreKeys() []StoreKey {
 	return storeKeys
 }
 
-func (s NodeValueMap) MetaInfo() StoreValueMetaInfoMap {
+func (s *NodeValueMap) MetaInfo() StoreValueMetaInfoMap {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
@@ -362,7 +366,7 @@ func (s NodeValueMap) MetaInfo() StoreValueMetaInfoMap {
 	return mInfo
 }
 
-func (s NodeValueMap) Diff(
+func (s *NodeValueMap) Diff(
 	d StoreValueMetaInfoMap) (StoreValueIdInfoMap, StoreValueIdInfoMap) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -379,7 +383,7 @@ func (s NodeValueMap) Diff(
 	return diffNew, selfNew
 }
 
-func (s NodeValueMap) Subset(nodes StoreValueIdInfoMap) StoreValueMap {
+func (s *NodeValueMap) Subset(nodes StoreValueIdInfoMap) StoreValueMap {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
